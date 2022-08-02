@@ -9,19 +9,34 @@ LIER project data analysis pipeline
 2. Spaxels reduction
 
 Input: quiscent_red_galaxies.fits, all maps files and logcube files 
-Output: spaxel_data_table.fits
-    X plots(.jpg):
+Output: 
+    spaxel_data_table.fits
+    Bin_1.fits
+    Bin_2.fits
+    Bin_3.fits
+    Bin_1_control.fits
+    Bin_2_control.fits
+    Bin_3_control.fits
+    8 plots(.jpg):
         Figure 2.1: EW of different emission lines against Ha, in contours
         Figure 2.2: EW of different emission lines against Ha after zero point correction
         Figure 2.3: EW of OII against Ha, with the bounding line ruling out low OII/Ha
-
+        Figure 2.4: Gaussian flux of OIII against OII and the bounding lines seperating low OIII/OII galaxies
+        Figure 2.5: Line ratio in log of NII/OII against NII/Ha 
+        Figure 2.6: Rotated version of Figure 2.5 making the trend of data parallel to the x axis
+        Figure 2.7: Figure 2.5 with the three seperated regions of high, mid and low metalicity bins
+        Figure 2.8: Velocity dispersion of the three metalicity bins
+    
+    
 Cut notation:
     In this section we use serval cut to eliminate unwanted galaxies, this is a quick check table to find out which portion of galaxies are included (or excluded)
-    cut1: contains the galaxies after excluding low OII/Ha EW
-    cut2: contains the galaxies in cut1 exclude galaxies with high fractional error of OIII/OII flux
-    cut3: contains the galaxies in cut2 and high value of OIII/OII (Seyfert)
-    cut4: contains the galaxies in cut1 and exclude cut3
-    cut5: contains the galaxies in cut4 and those with valid total EW index (mask != True)
+    cut1: contains the spaxels after excluding low OII/Ha EW
+    cut2: contains the spaxels in cut1 exclude galaxies with high fractional error of OIII/OII flux
+    cut3: contains the spaxels in cut2 and high value of OIII/OII (Seyfert)
+    cut4: contains the spaxels in cut1 and exclude cut3
+    cut5: contains the spaxels in cut4 and those with valid total EW index (mask != True)
+    cut6: contains strong line spaxels with valid and low fractional error of NII/OII, NII/Ha
+    cut7: contains the spaxels in cut6 and a valid velocity offset (stellar velocity - gas velocity)
 """
 
 #%%
@@ -36,6 +51,7 @@ import os
 import sys
 import time
 import astropy.constants
+from scipy import spatial  # import this to use KDTree and to query the KDTree
 
 import warnings
 warnings.filterwarnings("ignore")   # To ignore warnings raised from division of square root
@@ -43,12 +59,12 @@ warnings.filterwarnings("ignore")   # To ignore warnings raised from division of
 #%%
 #   Set value of speed of light and its inverse
 
-c = astropy.constants.c.to('km/s').value
-inv_c = 1/c
+c_vel = astropy.constants.c.to('km/s').value
+inv_c = 1/c_vel
 
 #%% 
 #   Read the selected galaxies from galaxy selection and check the data of the galaxies are found
-"""
+
 manga_path = '/home/rbyan'    # The location of the manga repository
 
 log = fits.open('../Data/quiescent_red_sequence_galaxies.fits')     # Open the fits file containing selected galaxies information
@@ -75,12 +91,13 @@ names = ['plate','ifu','z_vel','gal_red_B-V','stell_vel_ID','emline_ID',
          'stell_sigma_mask','spec_index_Dn4000','spec_index_ivar_Dn4000',
          'spec_index_mask_Dn4000','spec_index_HDeltaA',
          'spec_index_ivar_HDeltaA','spec_index_mask_HDeltaA','flux_r_band',
-         'wave_median_LSF', 'vel_median_LSF', 'SIId-4068_LSF', 'OIII-4363_LSF',
-         'NII-5755_LSF', 'SIII-6312_LSF', 'OIId-7320_LSF', 'SIIId-9071_LSF', 'SIIId-9533_LSF']
+         'wave_median_LSF', 'vel_median_LSF','OIId-3727_LSF', 'SIId-4068_LSF', 'OIII-4363_LSF', 
+         'H_beta_LSF', 'OIII-5007_LSF', 'NII-5755_LSF', 'OI-6300_LSF', 'SIII-6312_LSF', 'H_alpha_LSF',
+         'NII-6583_LSF', 'SIId-6716_LSF', 'OIId-7320_LSF', 'SIIId-9071_LSF', 'SIIId-9533_LSF']
 
 dtype = ['i4','i4','f8','f8','f8','f8','f8','f8','f8','f8','f8','f8','f8',
          'f8','f8','f8','f8','f8','f8','f8','f8','f8','f8','f8','f8','f8',
-         'f8','f8','f8','f8','f8','f8']
+         'f8','f8','f8','f8','f8','f8','f8','f8','f8','f8','f8','f8','f8']
 
 assert len(names)==len(dtype)
 
@@ -138,7 +155,7 @@ def LSF(logc, cut, z):
     low_in = np.max(np.where(wave<lower)[0])
     up_in = np.min(np.where(wave>upper)[0]) if (upper < wave.max()) else int(len(wave-1))
     ind = int(round((low_in+up_in)/2))
-    wave_med = (logc['LSFPost'].data[ind,:,:]/wave[ind])*c
+    wave_med = (logc['LSFPost'].data[ind,:,:]/wave[ind])*c_vel
     LSF_copy = logc['LSFPost'].data[low_in:up_in,:,:].copy()
     wave_temp = wave[low_in:up_in]
     wave_temp = np.expand_dims(wave_temp, axis = 1)     #old version of numpy on cluster do not support tuple or list input
@@ -146,7 +163,7 @@ def LSF(logc, cut, z):
     wave_temp = np.repeat(wave_temp, LSF_copy.shape[1], axis=1)
     wave_temp = np.repeat(wave_temp, LSF_copy.shape[2], axis=2)
     LSF_copy=LSF_copy/wave_temp
-    vel_med = c*np.median(LSF_copy,axis=0)
+    vel_med = c_vel*np.median(LSF_copy,axis=0)
     return wave_med.flatten()[cut], vel_med.flatten()[cut]
     
 #   This function reutrns the LSF in velocity space of a specific wavelength
@@ -154,7 +171,7 @@ def LSF_lines(logc, cut, z, wavelength):
     wave_z = wavelength*(1+z)
     ind = int(round(np.max(np.where(wave<wave_z)[0])))
     LSF = logc['LSFPost'].data[ind,:,:]
-    return (c*(LSF/wave[ind])).flatten()[cut]
+    return (c_vel*(LSF/wave[ind])).flatten()[cut]
 
 #%% 
 #   Select good and high S/N spaxels 
@@ -231,28 +248,36 @@ for i in range(len(plate)):
     row[:,22] = r_data(logc, totalcut)
     row[:,23] ,row[:,24] = LSF(logc, totalcut, z)
     #   [SII] 4068,4076, [OIII] 4363, [NII] 5755, [SIII] 6312, [OII] 7320,7330, [SIIId] 9071,9533
-    row[:,25] = LSF_lines(logc, totalcut, z, (4068.60 + 4076.35)/2)    # [SII] 4068,4076
-    row[:,26] = LSF_lines(logc, totalcut, z, 4363.209)  # [OIII] 4363
-    row[:,27] = LSF_lines(logc, totalcut, z, 5754.59)   # [NII] 5755
-    row[:,28] = LSF_lines(logc, totalcut, z, 6312.06)   # [SIII] 6312
-    row[:,29] = LSF_lines(logc, totalcut, z, (7330.19 + 7319.92)/2)     # [OII] 7320,7330
-    row[:,30] = LSF_lines(logc, totalcut, z, 9071.1)    # [SIIId] 9071
-    row[:,31] = LSF_lines(logc, totalcut, z, 9533.2)    # [SIIId] 9533
+    
+    row[:,25] = LSF_lines(logc, totalcut, z, (3727.092+3729.875)/2)  # [OIId] 3727, 3729
+    row[:,26] = LSF_lines(logc, totalcut, z, (4068.60 + 4076.35)/2)    # [SII] 4068,4076
+    row[:,27] = LSF_lines(logc, totalcut, z, 4363.209)  # [OIII] 4363
+    row[:,28] = LSF_lines(logc, totalcut, z, 4862.721)  # H beta  
+    row[:,29] = LSF_lines(logc, totalcut, z, 5008.24)  # [OIII] 5007
+    row[:,30] = LSF_lines(logc, totalcut, z, 5754.59)   # [NII] 5755
+    row[:,31] = LSF_lines(logc, totalcut, z, 6302.046)  # [OI] 6300
+    row[:,32] = LSF_lines(logc, totalcut, z, 6312.06)   # [SIII] 6312
+    row[:,33] = LSF_lines(logc, totalcut, z, 6564.6)  # H alpha
+    row[:,34] = LSF_lines(logc, totalcut, z, 6585.27)  # [NII] 6583
+    row[:,35] = LSF_lines(logc, totalcut, z, (6718.295 + 6732.674)/2)     # [SII] 6716,6731
+    row[:,36] = LSF_lines(logc, totalcut, z, (7330.19 + 7319.92)/2)     # [OII] 7320,7330
+    row[:,37] = LSF_lines(logc, totalcut, z, 9071.1)    # [SIIId] 9071
+    row[:,38] = LSF_lines(logc, totalcut, z, 9533.2)    # [SIIId] 9533
      
 
     # Get emmision line properties of Ha, hb, o2, n2, s2, o3, o1, s3
     for j in range(len(emline_names)):
-        row[:,32+9*j] = (maps['EMLINE_SEW'].data[emline_indx[j],:,:].flatten()[totalcut])          # summed equivalent width
-        row[:,33+9*j] = (maps['EMLINE_SEW_IVAR'].data[emline_indx[j],:,:].flatten()[totalcut])  
-        row[:,34+9*j] = (maps['EMLINE_SEW_MASK'].data[emline_indx[j],:,:].flatten()[totalcut])  
+        row[:,39+9*j] = (maps['EMLINE_SEW'].data[emline_indx[j],:,:].flatten()[totalcut])          # summed equivalent width
+        row[:,40+9*j] = (maps['EMLINE_SEW_IVAR'].data[emline_indx[j],:,:].flatten()[totalcut])  
+        row[:,41+9*j] = (maps['EMLINE_SEW_MASK'].data[emline_indx[j],:,:].flatten()[totalcut])  
         
-        row[:,35+9*j] = (maps['EMLINE_GEW'].data[emline_indx[j],:,:].flatten()[totalcut])      #Higher S/N if detect      # gauss equivalent width
-        row[:,36+9*j] = (maps['EMLINE_GEW_IVAR'].data[emline_indx[j],:,:].flatten()[totalcut])  
-        row[:,37+9*j] = (maps['EMLINE_GEW_MASK'].data[emline_indx[j],:,:].flatten()[totalcut])      
+        row[:,42+9*j] = (maps['EMLINE_GEW'].data[emline_indx[j],:,:].flatten()[totalcut])      #Higher S/N if detect      # gauss equivalent width
+        row[:,43+9*j] = (maps['EMLINE_GEW_IVAR'].data[emline_indx[j],:,:].flatten()[totalcut])  
+        row[:,44+9*j] = (maps['EMLINE_GEW_MASK'].data[emline_indx[j],:,:].flatten()[totalcut])      
         
-        row[:,38+9*j] = (maps['EMLINE_GFLUX'].data[emline_indx[j],:,:].flatten()[totalcut])        # gaussian flux
-        row[:,39+9*j] = (maps['EMLINE_GFLUX_IVAR'].data[emline_indx[j],:,:].flatten()[totalcut])   # gaussian flux error
-        row[:,40+9*j] = (maps['EMLINE_GFLUX_MASK'].data[emline_indx[j],:,:].flatten()[totalcut])   # same mask for flux and error
+        row[:,45+9*j] = (maps['EMLINE_GFLUX'].data[emline_indx[j],:,:].flatten()[totalcut])        # gaussian flux
+        row[:,46+9*j] = (maps['EMLINE_GFLUX_IVAR'].data[emline_indx[j],:,:].flatten()[totalcut])   # gaussian flux error
+        row[:,47+9*j] = (maps['EMLINE_GFLUX_MASK'].data[emline_indx[j],:,:].flatten()[totalcut])   # same mask for flux and error
 
     table = vstack([table,Table(row,names=names,dtype=dtype)])
     maps.close()
@@ -264,7 +289,7 @@ print('We have {} spaxels after cutting S/N < {}'.format(len(table),snrcut))
 table.write('../Data/spaxel_data_table.fits', format='fits',overwrite=True)
 log.close()
 del log
-"""
+
 #%%
 #   Open the table
 
@@ -402,7 +427,7 @@ sIII_ew_corr = sIII_ew - 0.05
 
 plt.figure(figsize=(18,9))
 p8 = plot_EW(oII_ew_corr,[-2,10],[-5,40],r'OII $\lambda3727$', 1) 
-p9 = plot_EW(nII_ew_corr,[-2,10],[-2,5],r'NII $\lambda6549$', 2)
+p9 = plot_EW(nII_ew_corr,[-2,10],[-2,5],r'NII $\lambda6585$', 2)
 p10 = plot_EW(sII_ew_corr,[-2,10],[-3,10],r'SII $\lambda\lambda6718,6732$', 3)
 p11 = plot_EW(oIII_ew_corr,[-2,10],[-1.5,6],r'OIII $\lambda5008$', 4) #0.245
 p12 = plot_EW(hb_ew_corr,[-2,10],[-1.5,4],r'H$\beta$', 5) #-0.035
@@ -477,7 +502,7 @@ cut4 = ((cut1==True) & ((cut2 != cut3) == False))
 print('We have {} spaxels after eliminating low OII/Ha and Seyfert galaxies \n'.format(cut4.sum()))
 
 #%%
-#   2.4 Strong/Zero lines seperation
+#   2.4 Strong lines spaxels selection
 
 #   1. Calculate the total EW index and seperate the spaxels into strong and zero lines spaxels
 tot_ew_indx = ha_ew + 1.03*nII_ew_corr + 5*oII_ew_corr + 0.5*(oIII_ew_corr+sII_ew_corr)
@@ -485,7 +510,7 @@ strong_line_percentile = 80   # Spaxels higher than this value will be classifie
 
 cut5 = cut4 & (tot_ew_indx.mask == False)
 strong_line = (cut5 & (tot_ew_indx>np.percentile(tot_ew_indx[cut5],strong_line_percentile))).data
-print('We have {} strong line samples\n'.format(strong_line.sum()))
+print('We have {} strong line spaxels\n'.format(strong_line.sum()))
 
 #%%
 #   2.5 Metalicity bins seperation
@@ -500,7 +525,7 @@ frac_err_nII_oII = np.ma.sqrt(1/((nII_flux_corr)**2*(nII_flux_ivar)) + 1/((oII_f
 up_lim_frac_err_nII_ha = 0.3    # Upper limit fmrom fractional error cut
 up_lim_frac_err_nII_oII = 0.3
 
-cut6 = ((lr_nII_ha.mask == False) & (lr_nII_oII.mask == False) & (strong_line) & (frac_err_nII_ha<up_lim_frac_err_nII_ha) & (frac_err_nII_oII<0.3))
+cut6 = ((lr_nII_ha.mask == False) & (lr_nII_oII.mask == False) & (strong_line) & (frac_err_nII_ha<up_lim_frac_err_nII_ha) & (frac_err_nII_oII<up_lim_frac_err_nII_oII))
 print('We have {} spaxels with strong emission and good frac errors'.format(cut6.sum()))
 
 #   3. Select the spaxels with valid velocity offset
@@ -541,7 +566,7 @@ x_lr_rot,y_lr_rot = rotate(theta,x_lr,y_lr)
 xlim_lr_rot = np.array([-1,1])
 ylim_lr_rot = np.array([-1,1])
 
-plt.figure(figsize=(6,5))
+plt.figure(figsize=(5,5))
 plt.hist2d(x_rot[cut7],y_rot[cut7], bins=100, cmap=plt.cm.gray_r,
            norm=mpl.colors.LogNorm(), range=[xlim_lr_rot,ylim_lr_rot])
 plt.plot(x_lr_rot, y_lr_rot, ls='dashed', c='r')
@@ -562,7 +587,7 @@ plt.close()
 #   6. Remake graph with the lines diving data into different metalicity bins (Figure 2.7)
 x_bin_cut1,y_bin_cut1 = rotate(-theta,x_lr_33,y_lr_33)
 x_bin_cut2,y_bin_cut2 = rotate(-theta,x_lr_66,y_lr_33)
-plt.figure(figsize=(7,7))
+plt.figure(figsize=(5,5))
 plt.hist2d(lr_nII_ha[cut7],lr_nII_oII[cut7], bins=100, cmap=plt.cm.gray_r,  # a copy-paste from above
            norm=mpl.colors.LogNorm(),range=[xlim_lr,ylim_lr])
 plt.plot(x_lr,y_lr,ls='dashed',c='r')
@@ -575,6 +600,7 @@ plt.ylim(ylim_lr)
 plt.text(-0.45,0.75,r'High [NII]/H$\alpha$')
 plt.text(-1.40,0.45,r'Mid [NII]/H$\alpha$')
 plt.text(-1.4,-0.25,r'Low [NII]/H$\alpha$')
+plt.title('log [NII]/[OII] Vs log [NII]/H alpha')
 plt.savefig('../Output/2. Spaxels reduction/Figure 2.7.jpg', format='jpg')
 plt.close()
 
@@ -586,3 +612,218 @@ bin3_low_nII_ha = ((cut7) & (x_rot<np.percentile(x_rot[cut7],(100/3)))).data
 print('We have {} spaxels in high metalicity bin'.format(bin1_high_nII_ha.sum()))
 print('We have {} spaxels in mid metalicity bin'.format(bin2_mid_nII_ha.sum()))
 print('We have {} spaxels in low metalicity bin\n'.format(bin3_low_nII_ha.sum()))
+
+#%%
+#   2.6 Zero line spaxels selection
+
+#   1. Use the negative equilvalent width part to estimate the variance of the emission line
+def ivar_neg_ew(ew):
+    ncut1 = (cut4 & ((np.ma.filled(ew)<0)))
+    sd1 = np.sqrt(np.sum(ew[ncut1]**2)/ncut1.sum())
+    ncut2 = (ncut1 & (ew>(-3*sd1)))
+    return ncut2.sum()/np.sum(ew[ncut2]**2)
+
+ivar_ha = ivar_neg_ew(ha_ew)   
+ivar_oII = ivar_neg_ew(oII_ew_corr) 
+ivar_nII = ivar_neg_ew(nII_ew_corr)
+ivar_sII = ivar_neg_ew(sII_ew_corr)
+ivar_oIII = ivar_neg_ew(oIII_ew_corr)
+ivar_hb = ivar_neg_ew(hb_ew_corr)
+
+#   2. Select the zero lines spaxels and make sure the they have valid velocity dispersion and Dn4000
+mult_eli = ((ha_ew)**2*ivar_ha + (oII_ew_corr)**2*ivar_oII + (nII_ew_corr)**2*ivar_nII + (sII_ew_corr)**2*ivar_sII + (oIII_ew_corr)**2*ivar_oIII < 6.25 ) #Signal to noise squared of all the strong lines
+zero_cut = ((mult_eli)&(mult_eli.mask==False)&(cut4)&(np.invert(strong_line))).data
+Dn4000 = get_data('spec_index_Dn4000','spec_index_mask_Dn4000')
+vdisp = get_data('stell_sigma_cor','stell_sigma_mask')                 # get dispersion velocityz
+zero_cut = ((zero_cut) & (Dn4000.mask==False) & (vdisp.mask==False) & np.isfinite(vdisp)).data
+print('Zero line sample has {} spaxels\n'.format(zero_cut.sum()))
+
+#%%
+#   2.7 Matching strong line and zero line samples
+
+#   1. Calculate the absolute r band (corrected for galactic extinction and relativistic effect)
+flux_r_band = np.log10((spaxel_data_table[1].data['flux_r_band']*10**(0.4*spaxel_data_table[1].data['gal_red_B-V']*2.285))*(1+spaxel_data_table[1].data['z_vel']/c_vel)**4)
+
+#   2. Normalized the parameters for samples matching
+def norm_0_1(array,indx):
+    # This shifts the array so that the 5th and 95th percentile of array[indx] are 0 and 1 respectively
+    # note: this will shift the entire array but the shift is only based on the indexed array
+    return ((array-np.percentile(array[indx],5)) / (np.percentile(array[indx],95)-np.percentile(array[indx],5)))
+
+LSF = spaxel_data_table[1].data['vel_median_LSF']
+norm_vdisp = norm_0_1(vdisp,zero_cut).data  
+norm_Dn4000 = norm_0_1(Dn4000,zero_cut).data  
+norm_flux_r_band = norm_0_1(flux_r_band,zero_cut)
+vdisp_LSF = np.sqrt(vdisp**2 + LSF**2)
+norm_LSF = norm_0_1(vdisp_LSF, zero_cut)
+
+control = spatial.KDTree(list(zip(norm_vdisp[zero_cut],norm_Dn4000[zero_cut], norm_flux_r_band[zero_cut], norm_LSF[zero_cut])))   # create a KDTree based on the normalized array 
+
+#   3. Define functions needed for samples matching
+def redo_gt_1(used_indx, d):
+    # Function that checks which spaxels to redo in the search for a control sample
+    # Here the condition is to redo a spaxel if it appears more than TWICE in the
+    # control group. 
+    # array = array of the number indices of the spaxels to be used in the control sample
+    # EX: array = ([[3,7],[8,2],[2,5],[2,3]]) the spaxel with index '2' is used 3 times
+    # so the output will be: ([False, False, False, False, False, False, True, False])
+    # notice this code flattens the array. Since things can be repeated twice, only the 
+    # third instance of 2 is marked to be re-done
+    unique, return_inverse, counts = np.unique(used_indx,return_inverse=True,return_counts=True)
+    redo = np.full(len(return_inverse),False)    # initialize array with False: Meaning don't redo anything
+    for i in range(len(np.where(counts>1)[0])):
+        count_gt_1 = np.where(return_inverse==np.where(counts>1)[0][i])[0]
+        count_gt_1 = np.delete(count_gt_1, np.argmin(d[count_gt_1]))
+        redo[count_gt_1] = True
+    return redo
+
+def check_unused_indx(array,used_indx):
+    # array = only the length of this matters, it must be the len(array)==# of spaxels in total control sample
+    # used_indx = array of the number indices of the spaxels to be used in this specific control sample
+    # EX: if there are 10 spaxels in the total control sample (that is len(array)=10)and the specific control sample only uses 
+    #     the 3rd and 5th spaxel (that is used_indx=[2,4]), this will return 
+    #     array([ True,  True, False,  True,  True, False,  True,  True,  True, True])
+    unused=np.full(len(array),False)  # True if indx does not appear in used_indx
+    for i in range(len(array)):
+        if (i==used_indx).sum()==0:
+            unused[i] = True
+    return unused
+
+def get_control(bin_cut):    
+    # Build the KDTree and get the control samples of each strong line spaxels
+    dist, bin_control = control.query(list(zip(norm_vdisp[bin_cut], norm_Dn4000[bin_cut],   # 
+                                                norm_flux_r_band[bin_cut],
+                                                norm_LSF[bin_cut])),k=2)
+    dist, bin_control = dist.ravel(),bin_control.ravel()
+    redo = redo_gt_1(bin_control , dist)  # see if we have to redo anything
+#   if redo.sum()!=0:
+    print('We have to redo {}/{} queries'.format(redo.sum(),len(redo)))
+    max_itt = 25
+    itt = 0
+    while (redo.sum() != 0):   # loops until redo.sum() is 0
+        # check what indices were not used
+        unused = check_unused_indx(norm_vdisp[zero_cut],bin_control) 
+        # make new control sample out of unused indices
+        control_new = spatial.KDTree(list(zip(norm_vdisp[zero_cut][unused],
+                                                    norm_Dn4000[zero_cut][unused],
+                                                    norm_flux_r_band[zero_cut][unused],
+                                                    norm_LSF[zero_cut][unused])))
+        # Search again for each spaxel with the new control
+        dist_new, bin_control_new = control_new.query(list(zip(norm_vdisp[bin_cut],  
+                                                norm_Dn4000[bin_cut],
+                                                norm_flux_r_band[bin_cut],
+                                                norm_LSF[bin_cut])),k=2)
+        # Turn the new index into old index so we can replace the
+        bin_control_new = np.where(unused==True)[0][bin_control_new]  
+        # Replace only the ones we need to redo
+        bin_control[redo]=bin_control_new.ravel()[redo]
+        dist[redo] = dist_new.ravel()[redo]
+        redo = redo_gt_1(bin_control, dist)  # see if we have to redo anything still
+        print('We have to redo {} queries'.format(redo.sum()))
+        itt += 1 
+        if itt == max_itt:   # stops infinite loop as long as max_itt is an int > 1
+            print('Reached max itteration of {}'.format(max_itt))
+            break
+    bin_control = np.where(zero_cut==True)[0][bin_control]   # changes indices to global indx only works if control is based on zero_cut
+    return bin_control,dist
+
+#   4. Create the control sample
+bin1_control,bin1_dist = get_control(bin1_high_nII_ha)   
+print()
+bin2_control,bin2_dist = get_control(bin2_mid_nII_ha)
+print()
+bin3_control,bin3_dist = get_control(bin3_low_nII_ha)
+print()
+
+#   5. Limit the max_distance between neighboring points and remake bin_split and bin_control
+max_dist = 0.05 # 3 dimensions 95th-5th = 1 when norm , 1/10=0.1, 0.1/2=0.05
+
+bin1_indx = np.where(bin1_high_nII_ha==True)[0]
+bin2_indx = np.where(bin2_mid_nII_ha==True)[0]
+bin3_indx = np.where(bin3_low_nII_ha==True)[0]
+def dist_selection(dist, control_indx, bin_indx):                                # this also makes the two new arrays a global indx (see return)
+    control_new = control_indx.copy()
+    indx_new = bin_indx.copy()
+    dist_new = dist.copy()
+    gt_max = np.where(dist>=max_dist)[0]
+    if len(gt_max)!=0:
+        delete_control = np.array([],dtype='i4')
+        delete_bin = np.array([],dtype='i4')
+        for j in range(len(gt_max)):
+            if gt_max[j]%2==0:
+                delete_control = np.append(delete_control,[gt_max[j],gt_max[j]+1])
+                delete_bin  = np.append(delete_bin, [int(gt_max[j]/2)])
+            else:
+                delete_control = np.append(delete_control,[gt_max[j],gt_max[j]-1])
+                delete_bin = np.append(delete_bin, [int((gt_max[j]-1)/2)])
+        indx_new = np.delete(indx_new, delete_bin)
+        control_new = np.delete(control_new, delete_control)
+        dist_new = np.delete(dist_new, delete_control)
+    return  dist_new, indx_new, control_new
+
+bin1_dist_new, bin1_indx_new, bin1_control_new = dist_selection(bin1_dist,bin1_control,bin1_indx)
+bin2_dist_new, bin2_indx_new, bin2_control_new = dist_selection(bin2_dist,bin2_control,bin2_indx)
+bin3_dist_new, bin3_indx_new, bin3_control_new = dist_selection(bin3_dist,bin3_control,bin3_indx)
+
+#%%
+#   2.8 Velocity offset bins separation
+
+#   1. Plot the histogram of velocity offset of the strong line samples (Figure 2.8)
+number_of_velocity_bins = 25
+
+plt.figure(figsize=(20,5))
+plt.subplot(1,3,1)
+bin1_hist = plt.hist(np.ma.filled(vel_offset[bin1_indx_new]), range=(-500,500), bins=number_of_velocity_bins)
+plt.title(r'High [NII]/H$\alpha$')
+plt.xlabel('Velocity offset (Stellar - Gas)')
+plt.subplot(1,3,2)
+bin2_hist = plt.hist(np.ma.filled(vel_offset[bin2_indx_new]), range=(-500,500), bins=number_of_velocity_bins)
+plt.title(r'Mid [NII]/H$\alpha$')
+plt.xlabel('Velocity offset (Stellar - Gas)')
+plt.subplot(1,3,3)
+bin3_hist = plt.hist(np.ma.filled(vel_offset[bin3_indx_new]), range=(-500,500), bins=number_of_velocity_bins)
+plt.title(r'Low [NII]/H$\alpha$')
+plt.xlabel('Velocity offset (Stellar - Gas)')
+plt.savefig('../Output/2. Spaxels reduction/Figure 2.8.jpg', format='jpg')
+plt.close()
+
+#   2. Seperate the samples to velocity bins using the above histogram
+
+def split_bins(bin_num,bin_hist,bin_control):
+    # Creates bin_splits based on the histograms above. Change the histogram, change the bin_split
+    split = []
+    avg = np.zeros(len(bin_hist[0]))
+    control = []
+    for i in range(len(bin_hist[1])-1):
+        temp = np.where((vel_offset[bin_num]>=bin_hist[1][i]) & (vel_offset[bin_num]<bin_hist[1][i+1]))
+        split.append(bin_num[temp])
+        avg[i] = np.ma.average(vel_offset[bin_num[temp]])
+        temp = np.asarray(temp)
+        temp = 2*temp
+        temp = np.append(temp, temp+1)
+        temp = np.sort(temp)
+        control.append(bin_control[temp])
+    return split, avg, control
+    
+bin1_split, bin1_avg, bin1_control_split = split_bins(bin1_indx_new, bin1_hist, bin1_control_new)
+bin2_split, bin2_avg, bin2_control_split = split_bins(bin2_indx_new, bin2_hist, bin2_control_new)
+bin3_split, bin3_avg, bin3_control_split = split_bins(bin3_indx_new, bin3_hist, bin3_control_new)
+
+#%%
+#   Save the bins data to a fits file
+
+def save_bin(bin_split,bin_avg,bin_control,num):
+    bin_s = fits.HDUList()
+    for i in range(len(bin_split)):
+        bin_s.append(fits.ImageHDU(bin_split[i],name='{}_{}'.format(num,i+1)))
+    bin_s.append(fits.ImageHDU(bin_avg,name='AVG_OFFSET_SUBBIN'))
+    bin_s.writeto('../Data/Bin/Bin_{}.fits'.format(num),overwrite=True)
+    bin_c = fits.HDUList()
+    for i in range(len(bin_control)):
+        bin_c.append(fits.ImageHDU(bin_control[i],name='{}_{}'.format(num,i+1)))
+    bin_c.append(fits.ImageHDU(bin_avg,name='AVG_OFFSET_SUBBIN'))
+    bin_c.writeto('../Data/Bin/Bin_{}_Control.fits'.format(num),overwrite=True)
+    
+save_bin(bin1_split,bin1_avg,bin1_control_split,1)
+save_bin(bin2_split,bin2_avg,bin2_control_split,2)
+save_bin(bin3_split,bin3_avg,bin3_control_split,3)
